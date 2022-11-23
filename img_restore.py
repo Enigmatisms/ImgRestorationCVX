@@ -10,11 +10,11 @@ import torch.nn.functional as F
 from torchvision.utils import save_image
 from torch.cuda.amp.grad_scaler import GradScaler
 from torch.cuda.amp import autocast as autocast
-from utils import make_conv_kernel, make_laplace
 from torch.nn.utils.clip_grad import clip_grad_norm_
+from utils import make_conv_kernel, make_laplace, make_scharr
 
 class RestoredImage(nn.Module):
-    def __init__(self, width = 720, height = 480, use_cuda = True, est_noise = True):
+    def __init__(self, width = 720, height = 480, use_cuda = True, est_noise = True, use_scharr = True):
         super().__init__()
         G_mat = scipy.io.loadmat('G.mat')['G']
         self.device = 'cuda' if use_cuda else 'cpu'
@@ -26,7 +26,10 @@ class RestoredImage(nn.Module):
         self.noise = nn.Parameter(torch.zeros(1, 1, self.h, self.w, device = self.device), requires_grad = True)
         self.laplace_kernel = make_conv_kernel(make_laplace()).to(self.device)
         self.noise_patch_size = 31
-        self.use_tv = False
+        self.use_scharr = use_scharr
+        if self.use_scharr:
+            self.scharrs = [make_conv_kernel(make_scharr(i)).to(self.device) for i in range(6)]
+            self.scharrs.append(make_conv_kernel(make_laplace()).to(self.device))
         self.use_noise = est_noise
         
     def matrix_norm_reg(self):
@@ -50,6 +53,13 @@ class RestoredImage(nn.Module):
             diff2 = diff1[:-1] - diff1[1:]
             diff_eigs = diff_eigs + diff2 ** 2
         return torch.mean(diff_eigs)
+
+    def min_spectrum_tail(self):
+        tail_size = 30
+        patch = self.img.squeeze(0).mean(dim = 0)
+        decentered_patch = patch - torch.mean(patch)                          # decentralize
+        _, eigs_sorted, _ = torch.svd(decentered_patch)      # make symmetric
+        return torch.mean(eigs_sorted[-tail_size:] ** 2)
         
     @staticmethod 
     def conv(img: torch.Tensor, kernel: torch.Tensor, aux: torch.Tensor = None) -> torch.Tensor:
@@ -63,17 +73,20 @@ class RestoredImage(nn.Module):
     def calc_tv_loss(self, l1 = True):
         diff_image_y = self.img[:, :-1, :] - self.img[:, 1:, :]
         diff_image_x = self.img[:, :, :-1] - self.img[:, :, 1:]
+        diff_image_d = self.img[:, 1:, 1:] - self.img[:, :-1, :-1]
         if l1 == True:
             return torch.mean(diff_image_y.abs()) + torch.mean(diff_image_x.abs())
         else:
-            return torch.mean(diff_image_y ** 2) + torch.mean(diff_image_x ** 2)
+            return torch.mean(diff_image_y ** 2) + torch.mean(diff_image_x ** 2) + \
+                   torch.mean(diff_image_d ** 2)
         
     def forward(self):
         conv_output = RestoredImage.conv(self.img, self.conv_kernel)
         if self.use_noise:
             conv_output = conv_output + self.noise
-        if self.use_tv:
-            return conv_output, self.calc_tv_loss()
+        if self.use_scharr:
+            first_order = sum([(RestoredImage.conv(self.img, kernel) ** 2).mean() for kernel in self.scharrs])
+            return conv_output, first_order
         else:
             return conv_output, (RestoredImage.conv(self.img, self.laplace_kernel) ** 2).mean()
     
@@ -82,11 +95,12 @@ def train_main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type = int, default = 150, help = "Training lasts for . epochs")
     parser.add_argument("--eval_time", type = int, default = 20, help = "Tensorboard output interval (train time)")
-    parser.add_argument("--reg_coeff", type = float, default = 0.03, help = "Weight for regularizer norm")
+    parser.add_argument("--reg_coeff", type = float, default = 0.0004, help = "Weight for regularizer norm")
     parser.add_argument("--decay_rate", type = float, default = 0.998, help = "After <decay step>, lr = lr * <decay_rate>")
     parser.add_argument("-o", "--optimize", action = 'store_true', default = False, help = "Use auto-mixed precision optimization")
-    parser.add_argument("-n", "--est_noise", action = 'store_true', default = False, help = "Whether to estimate noise")
     parser.add_argument("--cpu", action = 'store_true', default = False, help = "Disable GPU acceleration")
+    parser.add_argument("--scharr", action = 'store_true', default = False, help = "Use first order gradient Scharr kernel")
+    parser.add_argument("-n", "--est_noise", action = 'store_true', default = False, help = "Whether to estimate noise")
     parser.add_argument("--lr", type = float, default = 0.2, help = "Start lr")
     parser.add_argument("--name", type = str, default = "./input/blurred3.png", help = "Image name")
     args = parser.parse_args()
@@ -96,6 +110,7 @@ def train_main():
     use_cuda            = (not args.cpu) and torch.cuda.is_available()
     use_amp             = args.optimize
     est_noise           = args.est_noise  
+    use_scharr          = args.scharr
     device = 'cuda' if use_cuda else 'cpu'
 
     img = plt.imread(args.name)
@@ -103,7 +118,7 @@ def train_main():
         img = img[..., :-1]
     img = torch.from_numpy(img).permute(2, 0, 1).to(device).unsqueeze(0)
     
-    rimg = RestoredImage(img.shape[3], img.shape[2], use_cuda = use_cuda, est_noise = est_noise).to(device)
+    rimg = RestoredImage(img.shape[3], img.shape[2], use_cuda = use_cuda, est_noise = est_noise, use_scharr = use_scharr).to(device)
     l2_loss = lambda x, y: torch.mean((x - y) ** 2)
     opt = optim.Adam(rimg.parameters(), lr = args.lr)
     sch = optim.lr_scheduler.ExponentialLR(opt, args.decay_rate)
@@ -116,10 +131,9 @@ def train_main():
     def train_epoch():
         result, reg_loss = rimg.forward()
         img_loss = l2_loss(result, img)
-
         loss: torch.Tensor = reg_loss * args.reg_coeff + img_loss
         if rimg.use_noise:
-            loss = loss + 1e-4 * rimg.matrix_norm_reg()
+            loss = loss + 1e-4 * rimg.min_spectrum_tail()
         return loss, img_loss, reg_loss
     for ep in tqdm.tqdm(range(0, epochs)):
 

@@ -7,8 +7,19 @@ import matplotlib.pyplot as plt
 import torch.nn.functional as F
 from torchvision.utils import save_image
 
+SCHARR = torch.FloatTensor([
+    [[-3, 0, 3], [-10, 0, 10], [-3, 0, 3]],       # 0 deg
+    [[-3, -10, 0], [-3, 0, 3], [0, 3, 10]],       # 45 deg
+    [[-3, -10, -3], [0, 0, 0], [3, 10, 3]],       # 90 deg
+])
+
 def make_laplace():
     return torch.FloatTensor([[0, -1, 0], [-1, 4, -1], [0, -1, 0]])
+
+def make_scharr(direction: int = 0):
+    if direction >= 3:
+        return -SCHARR[direction - 3]
+    return SCHARR[direction]
 
 def make_conv_kernel(single_layer: torch.Tensor) -> torch.Tensor:
     result = torch.zeros((3, 3, single_layer.shape[0], single_layer.shape[1]), device = single_layer.device)
@@ -48,19 +59,10 @@ def min_max_filtering(img:np.ndarray, radius: int = 2, is_max = True):
                 output[i - radius, j - radius, :] = rgb_values[idx, :]        # 最大值中值化
     return output
 
-def bidirectional_filtering():
-    img = plt.imread("./input/blurred3.png")
-    print(img.dtype, img.shape)
-    new_img = cv.cvtColor(img, cv.COLOR_RGB2HSV)
-    new_img[..., 0] = min_max_filtering(new_img[..., 0], 2, False)[..., 0]
-    laplace = cv.Laplacian(new_img[..., 0], cv.CV_32F)
-    plt.imshow(laplace)
-    plt.colorbar()
-    plt.show()
+def bilateral_filtering():
+    img = plt.imread("./input/blurred1.png")
+    filtered = cv.bilateralFilter(img, 3, 30, 5)
+    plt.imsave("filtered.png", filtered)
 
 if __name__ == "__main__":
-    img_sum = torch.zeros(480, 720, 3)
-    for i in range(1, 5):
-        img = plt.imread(f"tensor-{i}.png")
-        img_sum += img
-    plt.imsave("tensor.png", img)
+    bilateral_filtering()
