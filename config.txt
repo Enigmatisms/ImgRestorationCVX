@@ -18,3 +18,9 @@ without noise estimation:
     reg_coeff: 0.002
     epochs: 150
     scharr: False
+
+Results: 
+- img-1-scharr-laplace.png 0.3104
+- img-2-scharr-max-filtered.png 0.1228
+- img-3-noise-est-laplace.png 0.1573
+- img-3-noise-scharr-laplace.png 0.1826

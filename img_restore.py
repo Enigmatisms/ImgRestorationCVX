@@ -57,8 +57,8 @@ class RestoredImage(nn.Module):
     def min_spectrum_tail(self):
         tail_size = 30
         patch = self.img.squeeze(0).mean(dim = 0)
-        decentered_patch = patch - torch.mean(patch)                          # decentralize
-        _, eigs_sorted, _ = torch.svd(decentered_patch)      # make symmetric
+        decentered_patch = patch - torch.mean(patch)             # decentralize
+        _, eigs_sorted, _ = torch.svd(decentered_patch)
         return torch.mean(eigs_sorted[-tail_size:] ** 2)
         
     @staticmethod 

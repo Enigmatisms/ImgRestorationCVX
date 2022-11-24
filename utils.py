@@ -1,7 +1,6 @@
 import tqdm
 import torch
 import scipy.io
-import cv2 as cv
 import numpy as np
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
@@ -30,11 +29,11 @@ def make_conv_kernel(single_layer: torch.Tensor) -> torch.Tensor:
 
 def pure_conv():
     from img_restore import RestoredImage
-    img = plt.imread("./input/figure3.png")
+    img = plt.imread("./input/figure2.png")
     G_mat = scipy.io.loadmat('G.mat')['G']
     conv_kernel = make_conv_kernel(torch.from_numpy(G_mat)).cuda()
     img_out = RestoredImage.conv(torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).cuda(), conv_kernel)
-    save_image(img_out.clamp(0, 1), "conved.png", 1)
+    save_image(img_out.clamp(0, 1), "conved.png")
     
 def min_max_filtering(img:np.ndarray, radius: int = 2, is_max = True):
     if img.ndim < 3:
@@ -59,10 +58,11 @@ def min_max_filtering(img:np.ndarray, radius: int = 2, is_max = True):
                 output[i - radius, j - radius, :] = rgb_values[idx, :]        # 最大值中值化
     return output
 
-def bilateral_filtering():
-    img = plt.imread("./input/blurred1.png")
-    filtered = cv.bilateralFilter(img, 3, 30, 5)
-    plt.imsave("filtered.png", filtered)
+def png2bmp(path):
+    img = plt.imread(path)
+    path_name = path[:-4]
+    print(f"Processing '{path_name}'")
+    plt.imsave("filtered.bmp", img)
 
 if __name__ == "__main__":
-    bilateral_filtering()
+    pure_conv()
